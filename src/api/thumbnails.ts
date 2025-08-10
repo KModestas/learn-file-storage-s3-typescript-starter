@@ -1,14 +1,16 @@
 import { getBearerToken, validateJWT } from "../auth";
 import { respondWithJSON } from "./json";
-import { getVideo } from "../db/videos";
+import { getVideo, getVideos, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
-import { BadRequestError, NotFoundError } from "./errors";
+import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 
 type Thumbnail = {
   data: ArrayBuffer;
   mediaType: string;
 };
+
+const MAX_UPLOAD_SIZE = 10 << 20;
 
 const videoThumbnails: Map<string, Thumbnail> = new Map();
 
@@ -45,9 +47,27 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const token = getBearerToken(req.headers);
   const userID = validateJWT(token, cfg.jwtSecret);
 
-  console.log("uploading thumbnail for video", videoId, "by user", userID);
+  const formData = req.formData()
+  const thumbnail = (await formData).get('thumbnail')
 
-  // TODO: implement the upload here
+  if (!(thumbnail instanceof File)) throw new BadRequestError('Unable to parse File')
+  if (thumbnail.size > MAX_UPLOAD_SIZE) throw new BadRequestError('File too large. Must be 10MB or smaller.')
 
-  return respondWithJSON(200, null);
+  const mediaType = thumbnail.type
+  const thumbnailData = await thumbnail.arrayBuffer()
+
+  const video = getVideo(cfg.db, videoId)
+
+
+  if (video?.userID !== userID) throw new UserForbiddenError('404')
+
+  videoThumbnails.set(videoId, { data: thumbnailData, mediaType })
+
+  const thumbnailURL = `http://localhost:${cfg.port}/api/thumbnails/${videoId}`
+
+  video.thumbnailURL = thumbnailURL
+
+  updateVideo(cfg.db, video)
+
+  return respondWithJSON(200, video);
 }
